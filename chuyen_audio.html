@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Chuyển Word thành Audio (có xuất MP3)</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 700px; margin: 40px auto; padding: 20px; background-color: #f4f4f9; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; }
+        .box { background: white; padding: 20px; border-radius: 8px; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; font-size: 14px; }
+        #btnPlay { background-color: #4CAF50; color: white; }
+        #btnStop { background-color: #f44336; color: white; }
+        #btnRecord { background-color: #2196F3; color: white; }
+        #btnRecord:disabled { background-color: #9e9e9e; cursor: not-allowed; }
+        #textArea { width: 100%; height: 180px; margin-top: 15px; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
+        .note { font-size: 13px; color: #666; margin-top: 15px; line-height: 1.6; }
+        .note.warn { color: #c0392b; background: #fdecea; padding: 10px; border-radius: 5px; }
+        #status { margin-top: 10px; font-weight: bold; color: #2196F3; min-height: 20px; }
+        .row { display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+
+    <h2>🎧 Chuyển File Word thành Audio (MP3)</h2>
+    
+    <div class="box">
+        <label><strong>1. Chọn file Word (.docx):</strong></label><br><br>
+        <input type="file" id="fileInput" accept=".docx" />
+        
+        <br><br>
+        <label><strong>2. Nội dung văn bản:</strong></label>
+        <textarea id="textArea" placeholder="Nội dung file Word sẽ hiện ở đây..."></textarea>
+
+        <br>
+        <label><strong>3. Điều khiển:</strong></label><br>
+        <div class="row">
+            <button id="btnPlay">▶ Đọc thử</button>
+            <button id="btnStop">⏹ Dừng lại</button>
+            <button id="btnRecord">🎵 Ghi âm & Tải MP3</button>
+        </div>
+
+        <div id="status"></div>
+
+        <div class="note warn">
+            ⚠️ <b>Khi bấm "Ghi âm & Tải MP3":</b> Trình duyệt sẽ hỏi bạn chia sẻ màn hình. 
+            Hãy chọn tab đang mở chương trình này và <b>TÍCH chọn "Chia sẻ âm thanh của tab" (Share tab audio)</b>. 
+            Nếu không tích, file MP3 sẽ không có tiếng.
+        </div>
+
+        <div class="note">
+            💡 <b>Mẹo:</b> Nếu muốn file MP3 dài (sách, tài liệu nhiều trang), hãy chia nhỏ văn bản 
+            thành nhiều lần ghi để tránh bị ngắt quãng. Định dạng MP3 được tạo ra tương thích với 
+            mọi máy nghe nhạc, điện thoại, ô tô.
+        </div>
+    </div>
+
+    <!-- Thư viện đọc file Word -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <!-- Thư viện chuyển đổi sang MP3 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+    
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const textArea = document.getElementById('textArea');
+        const btnPlay = document.getElementById('btnPlay');
+        const btnStop = document.getElementById('btnStop');
+        const btnRecord = document.getElementById('btnRecord');
+        const statusEl = document.getElementById('status');
+
+        const speech = window.speechSynthesis;
+        let utterance = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordStream = null;
+
+        // ===== Đọc file Word =====
+        fileInput.addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function (event) {
+                mammoth.extractRawText({ arrayBuffer: event.target.result })
+                    .then(result => { textArea.value = result.value; })
+                    .catch(err => alert("Lỗi khi đọc file Word: " + err));
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // ===== Lấy giọng đọc tiếng Việt =====
+        function getVietnameseVoice() {
+            const voices = speech.getVoices();
+            return voices.find(v => v.lang.toLowerCase().includes('vi')) || null;
+        }
+
+        // Đảm bảo voices đã load (một số trình duyệt cần)
+        speech.onvoiceschanged = () => { getVietnameseVoice(); };
+
+        // ===== Đọc thử =====
+        btnPlay.addEventListener('click', function () {
+            const text = textArea.value.trim();
+            if (!text) { alert("Vui lòng chọn file Word trước!"); return; }
+            speech.cancel();
+            utterance = new SpeechSynthesisUtterance(text);
+            const vi = getVietnameseVoice();
+            if (vi) utterance.voice = vi;
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            speech.speak(utterance);
+        });
+
+        // ===== Dừng =====
+        btnStop.addEventListener('click', function () {
+            speech.cancel();
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+        });
+
+        // ===== Ghi âm & Tải MP3 =====
+        btnRecord.addEventListener('click', async function () {
+            const text = textArea.value.trim();
+            if (!text) { alert("Vui lòng chọn file Word trước!"); return; }
+
+            try {
+                // 1. Yêu cầu chia sẻ âm thanh tab
+                statusEl.textContent = "⏳ Đang chờ bạn chọn tab chia sẻ...";
+                recordStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+
+                const audioTracks = recordStream.getAudioTracks();
+                if (audioTracks.length === 0) {
+                    recordStream.getTracks().forEach(t => t.stop());
+                    recordStream = null;
+                    statusEl.textContent = "";
+                    alert("Bạn chưa tích chọn 'Chia sẻ âm thanh của tab'!\n\nHãy thử lại và TÍCH vào ô chia sẻ âm thanh.");
+                    return;
+                }
+
+                // 2. Bắt đầu ghi âm (chỉ lấy audio)
+                const audioStream = new MediaStream(audioTracks);
+                const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                    ? 'audio/webm;codecs=opus'
+                    : 'audio/webm';
+                mediaRecorder = new MediaRecorder(audioStream, { mimeType });
+                recordedChunks = [];
+
+                mediaRecorder.ondataavailable = e => {
+                    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    statusEl.textContent = "⏳ Đang chuyển đổi sang MP3...";
+                    try {
+                        const webmBlob = new Blob(recordedChunks, { type: 'audio/webm' });
+                        const mp3Blob = await convertToMp3(webmBlob);
+
+                        // 3. Tải file
+                        const url = URL.createObjectURL(mp3Blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'audio_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.mp3';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+                        statusEl.textContent = "✅ Đã tải file MP3 thành công!";
+                    } catch (err) {
+                        console.error(err);
+                        statusEl.textContent = "❌ Lỗi chuyển MP3: " + err.message;
+                    } finally {
+                        // Dọn dẹp
+                        if (recordStream) {
+                            recordStream.getTracks().forEach(t => t.stop());
+                            recordStream = null;
+                        }
+                        mediaRecorder = null;
+                        btnRecord.disabled = false;
+                        btnRecord.textContent = '🎵 Ghi âm & Tải MP3';
+                        setTimeout(() => { statusEl.textContent = ""; }, 5000);
+                    }
+                };
+
+                mediaRecorder.start();
+                btnRecord.disabled = true;
+                btnRecord.textContent = '⏺ Đang ghi âm...';
+                statusEl.textContent = "🔴 Đang đọc và ghi âm...";
+
+                // Đợi 300ms cho recorder ổn định rồi mới đọc
+                await new Promise(r => setTimeout(r, 300));
+
+                speech.cancel();
+                utterance = new SpeechSynthesisUtterance(text);
+                const vi = getVietnameseVoice();
+                if (vi) utterance.voice = vi;
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+
+                utterance.onend = () => {
+                    // Đợi thêm 500ms cho âm thanh cuối vang ra hết rồi mới dừng ghi
+                    setTimeout(() => {
+                        if (mediaRecorder && mediaRecorder.state === 'recording') {
+                            mediaRecorder.stop();
+                        }
+                    }, 500);
+                };
+
+                utterance.onerror = (e) => {
+                    console.error("Speech error:", e);
+                    if (mediaRecorder && mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                    }
+                };
+
+                speech.speak(utterance);
+
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = "";
+                if (err.name === 'NotAllowedError') {
+                    alert("Bạn đã từ chối chia sẻ màn hình. Vui lòng thử lại và cho phép chia sẻ.");
+                } else {
+                    alert("Lỗi: " + err.message);
+                }
+                btnRecord.disabled = false;
+                btnRecord.textContent = '🎵 Ghi âm & Tải MP3';
+                if (recordStream) {
+                    recordStream.getTracks().forEach(t => t.stop());
+                    recordStream = null;
+                }
+            }
+        });
+
+        // ===== Chuyển đổi WebM → MP3 bằng lamejs =====
+        async function convertToMp3(webmBlob) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await webmBlob.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+            const channels = Math.min(2, audioBuffer.numberOfChannels);
+            const sampleRate = audioBuffer.sampleRate;
+            const kbps = 128;
+
+            const mp3Encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps);
+
+            // Lấy dữ liệu PCM từ các kênh
+            const leftFloat = audioBuffer.getChannelData(0);
+            const rightFloat = channels > 1 ? audioBuffer.getChannelData(1) : null;
+
+            const len = leftFloat.length;
+            const leftInt = new Int16Array(len);
+            for (let i = 0; i < len; i++) {
+                let s = Math.max(-1, Math.min(1, leftFloat[i]));
+                leftInt[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+
+            let rightInt = null;
+            if (rightFloat) {
+                rightInt = new Int16Array(len);
+                for (let i = 0; i < len; i++) {
+                    let s = Math.max(-1, Math.min(1, rightFloat[i]));
+                    rightInt[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+            }
+
+            // Encode từng block
+            const sampleBlockSize = 1152;
+            const mp3Data = [];
+            for (let i = 0; i < len; i += sampleBlockSize) {
+                const leftChunk = leftInt.subarray(i, i + sampleBlockSize);
+                let mp3buf;
+                if (rightInt) {
+                    const rightChunk = rightInt.subarray(i, i + sampleBlockSize);
+                    mp3buf = mp3Encoder.encodeBuffer(leftChunk, rightChunk);
+                } else {
+                    mp3buf = mp3Encoder.encodeBuffer(leftChunk);
+                }
+                if (mp3buf.length > 0) mp3Data.push(new Int8Array(mp3buf));
+            }
+
+            const end = mp3Encoder.flush();
+            if (end.length > 0) mp3Data.push(new Int8Array(end));
+
+            await audioCtx.close();
+
+            return new Blob(mp3Data, { type: 'audio/mp3' });
+        }
+    </script>
+
+</body>
+</html>
